@@ -16,7 +16,6 @@ A tentative list of algorithms to be implemented, linked to their respective pap
 
 - [Deep Q Network (DQN)](https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf) ([and supplementary paper](https://arxiv.org/pdf/1901.00137.pdf))
 - [Proximal Policy Optimization (PPO)](https://arxiv.org/pdf/1707.06347.pdf)
-- [Deep Deterministic Policy Gradient (DDPG)]()
 - [Twin Delayed Deep Deterministic policy gradient (TD3)](https://arxiv.org/pdf/1802.09477.pdf)
 - [Actor Critic with Experience Replay (ACER)](https://arxiv.org/pdf/1611.01224.pdf)
 - [Advantage Actor Critic (A2C)](https://arxiv.org/pdf/1602.01783.pdf)

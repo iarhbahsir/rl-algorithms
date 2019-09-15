@@ -24,29 +24,34 @@ num_iterations = 10000
 minibatch_size = 32
 num_steps_to_target_update = 10
 
-# we'll let the optimizer do the work of changing the stepsize/learning rate if necessary
-# right now it's just keras's default value for adam
-# TODO: sequence of stepsizes needed bc the model is being fit multiple times?
-stepsize = 0.001
-
 # we will anneal (reduce) the exploration probability from 1 to 0.1 (as in the paper)
 # our problem currently is not quite as complex, so we can't use the exact method in the paper
 # instead we'll just use a heuristic of decreasing it linearly over the first 75% of the learning phase
 start_exploration_prob = 1
 end_exploration_prob = 0.1
-annealment_portion = 0.75
-annealment_rate = ((start_exploration_prob-end_exploration_prob) / (num_iterations*annealment_portion))
+exploration_annealment_portion = 0.75
+exploration_annealment_rate = ((start_exploration_prob - end_exploration_prob) / (num_iterations * exploration_annealment_portion))
 exploration_prob = start_exploration_prob
+
+# we'll do the same thing with the stepsize, annealing it linearly from 0.001 to 0.0001 (just a guess)
+# this will occur over the last 80% of the iterations
+start_stepsize = 0.001
+end_stepsize = 0.0001
+stepsize_annealment_portion = 0.8
+stepsize_annealment_rate = ((start_stepsize - end_stepsize) / (num_iterations * stepsize_annealment_portion))
+stepsize = start_stepsize
+
 
 # Initialize the replay memory M to be empty
 replay_memory = []
+replay_memory_max_size = 1000
 
 # Initialize the Q-network with random weights θ
 q_net = Sequential([
     Dense(10, input_shape=(None, 4,)),
     Activation('relu'),
-    # Dense(10),
-    # Activation('relu'),
+    Dense(10),
+    Activation('relu'),
     Dense(2),
     Activation('linear')
 ])
@@ -59,8 +64,8 @@ q_net.compile(optimizer=adam(lr=stepsize), loss=mse, metrics=['accuracy'])
 target_net = Sequential([
     Dense(10, input_shape=(None, 4,)),
     Activation('relu'),
-    # Dense(10),
-    # Activation('relu'),
+    Dense(10),
+    Activation('relu'),
     Dense(2),
     Activation('linear')
 ])
@@ -86,6 +91,8 @@ for t in range(num_iterations):
     # Store transition (St, At, Rt, St+1) in M
     replay_memory.append((curr_state, action, reward, next_state, done))
 
+    # # only fit if past minibatch_size to avoid biased samples
+    # if len(replay_memory) > minibatch_size:
     # Experience replay: Sample random minibatch of transitions {(si, ai, ri, s′i)}i∈[n]from M
     transitions_minibatch_x = random.choices(replay_memory, k=minibatch_size)
     print(len(transitions_minibatch_x))
@@ -115,14 +122,22 @@ for t in range(num_iterations):
         target_net.set_weights(q_net.get_weights())
 
     # annealing the exploration rate from 1 to 0.1 over the first 75% of the steps
-    if t <= num_iterations * annealment_portion:
-        exploration_prob -= annealment_rate
+    if t <= num_iterations * exploration_annealment_portion:
+        exploration_prob -= exploration_annealment_rate
+
+    # annealing stepsize linearly from 0.001 to 0.0001 over last 80% of the steps
+    if t >= num_iterations * (1 - stepsize_annealment_portion):
+        stepsize -= stepsize_annealment_rate
+
+    # adjust replay memory size
+    if len(replay_memory) > replay_memory_max_size+10:
+        replay_memory = replay_memory[10:]
 
     # save our model every ~10% of training completion
     if t % (num_iterations//10) == 0 or t == num_iterations-1:
         print("iter", t)
-        q_net.save('models/' + model_name + '-qnet')
-        target_net.save('models/' + model_name + '-targetnet')
+        q_net.save('dqn/models/' + model_name + '-qnet')
+        target_net.save('dqn/models/' + model_name + '-targetnet')
 
     if not done:
         curr_state = next_state
@@ -138,6 +153,7 @@ for t in range(num_iterations):
 
 # evaluate model over 25000 steps or 100 episodes, whichever comes first
 # a successful model will result in an average of at least 195.0 steps per episode over 100 consecutive episodes
+# it looks like each episode will end after 500 steps max
 render = True
 num_eval_steps = 25000
 num_eval_episodes = 100
@@ -163,5 +179,5 @@ episode_length_histogram = plt.hist(episode_durations)
 plt.title("Episode Lengths")
 plt.xlabel("Number of Steps")
 plt.ylabel("Frequency")
-plt.savefig("episode_length_hist.png")
+plt.savefig("dqn/episode_length_hist.png")
 print("Mean episode length:", np.mean(episode_durations))
