@@ -13,11 +13,9 @@ import gym
 model_name = 'DQN-CartPole-v1'
 
 
-"""
-Input: MDP (S, A, P, R, γ), replay memory M, number of iterations T, minibatch size n,
-exploration probability ǫ ∈ (0, 1), a family of deep Q-networks Qθ : S × A → R, an integer Ttarget
-for updating the target network, and a sequence of stepsizes {αt}t≥0.
-"""
+# Input: MDP (S, A, P, R, γ), replay memory M, number of iterations T, minibatch size n,
+# exploration probability ǫ ∈ (0, 1), a family of deep Q-networks Qθ : S × A → R, an integer Ttarget
+# for updating the target network, and a sequence of stepsizes {αt}t≥0.
 
 discount_rate = 0.99
 num_iterations = 10000
@@ -115,7 +113,8 @@ for t in range(num_iterations):
         y[0, 0, a] = Yi
 
     # Update the Q-network: Perform a gradient descent step
-    q_net.fit(x=np.array([s for s, _, _, _, _ in transitions_minibatch_x]).reshape(len(transitions_minibatch_x), 1, 4,), y=np.array(transitions_minibatch_y).reshape(32, 1, 2), batch_size=minibatch_size)
+    q_net.fit(x=np.array([s for s, _, _, _, _ in transitions_minibatch_x]).reshape(len(transitions_minibatch_x), 1, 4,),
+              y=np.array(transitions_minibatch_y).reshape(32, 1, 2), batch_size=minibatch_size)
 
     # Update the target network: Update θ⋆ ← θ every Ttarget steps
     if t % num_steps_to_target_update == 0:
