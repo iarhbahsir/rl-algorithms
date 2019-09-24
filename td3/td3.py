@@ -16,8 +16,8 @@ import gym
 
 model_name = "TD3-LunarLanderContinuous-v2"
 
-num_iterations = 10000
-replay_memory_max_size = 1000
+num_iterations = 1000000
+replay_memory_max_size = 100000
 sigma = 0.2
 minibatch_size = 64
 discount_rate = 0.99
@@ -30,16 +30,15 @@ max_action = 2
 writer = SummaryWriter()
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-# TODO convert to gpu
+cpu_device = torch.device("cpu")
 
 # define actor network
-class TD3CartpoleActorNN(nn.Module):
+class TD3LunarLanderContinuousActorNN(nn.Module):
     def __init__(self):
-        super(TD3CartpoleActorNN, self).__init__()
-        self.fc1 = nn.Linear(8, 20)
-        self.fc2 = nn.Linear(20, 20)
-        self.fc3 = nn.Linear(20, 2)
+        super(TD3LunarLanderContinuousActorNN, self).__init__()
+        self.fc1 = nn.Linear(8, 100)
+        self.fc2 = nn.Linear(100, 100)
+        self.fc3 = nn.Linear(100, 2)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
@@ -49,17 +48,15 @@ class TD3CartpoleActorNN(nn.Module):
 
 
 # define critic network
-class TD3CartpoleCriticNN(nn.Module):
+class TD3LunarLanderContinuousCriticNN(nn.Module):
     def __init__(self):
-        super(TD3CartpoleCriticNN, self).__init__()
-        self.fc1 = nn.Linear(10, 20)
-        self.fc2 = nn.Linear(20, 20)
-        self.fc3 = nn.Linear(20, 1)
+        super(TD3LunarLanderContinuousCriticNN, self).__init__()
+        self.fc1 = nn.Linear(10, 100)
+        self.fc2 = nn.Linear(100, 100)
+        self.fc3 = nn.Linear(100, 1)
 
     def forward(self, state, action):
-        # print("critic forward shape", state.size(), action.size())
         x = cat((state, action), dim=1)  # concatenate inputs along 0th dimension
-        # print("critic x shape", x.size())
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
@@ -67,17 +64,25 @@ class TD3CartpoleCriticNN(nn.Module):
 
 
 # Initialize critic networks Qθ1, Qθ2, and actor network πφ with random parameters θ1, θ2, φ
-critic_net_1 = TD3CartpoleCriticNN()
-critic_net_2 = TD3CartpoleCriticNN()
-actor_net = TD3CartpoleActorNN()
+critic_net_1 = TD3LunarLanderContinuousCriticNN()
+critic_net_2 = TD3LunarLanderContinuousCriticNN()
+actor_net = TD3LunarLanderContinuousActorNN()
 
 # Initialize target networks θ'1 ← θ1, 0'2 ← θ2, φ' ← φ
-critic_target_net_1 = TD3CartpoleCriticNN()
+critic_target_net_1 = TD3LunarLanderContinuousCriticNN()
 critic_target_net_1.load_state_dict(critic_net_1.state_dict())
-critic_target_net_2 = TD3CartpoleCriticNN()
+critic_target_net_2 = TD3LunarLanderContinuousCriticNN()
 critic_target_net_2.load_state_dict(critic_net_2.state_dict())
-actor_target_net = TD3CartpoleActorNN()
+actor_target_net = TD3LunarLanderContinuousActorNN()
 actor_target_net.load_state_dict(actor_net.state_dict())
+
+# make GPU compatible
+critic_net_1 = critic_net_1.to(device)
+critic_net_2 = critic_net_2.to(device)
+critic_target_net_1 = critic_target_net_1.to(device)
+critic_target_net_2 = critic_target_net_2.to(device)
+actor_net = actor_net.to(device)
+actor_target_net = actor_target_net.to(device)
 
 # Initialize replay buffer B
 replay_buffer = []
@@ -85,7 +90,7 @@ replay_buffer = []
 # initialize the environments
 env = gym.make('LunarLanderContinuous-v2')
 curr_state = env.reset()
-curr_state = tensor(curr_state).float()
+curr_state = tensor(curr_state).float().to(device)
 
 test_env = gym.make('LunarLanderContinuous-v2')
 curr_test_state = test_env.reset()
@@ -99,20 +104,18 @@ critic_net_1_optimizer = optim.Adam(critic_net_1.parameters(), lr=0.001)
 critic_net_2_optimizer = optim.Adam(critic_net_2.parameters(), lr=0.001)
 actor_net_optimizer = optim.Adam(actor_net.parameters(), lr=0.001)
 
-# TODO remove empty comma?
-
 # initialize normal distribution N
 normal_dist = normal.Normal(0, sigma)
 
 # for t = 1 to T do
 for t in range(num_iterations):
     # Select action with exploration noise a ∼ πφ(s) + ϵ ,ϵ ∼ N (0, σ), and observe reward r and new state s'
-    action = clamp(actor_net(curr_state.view(1, -1,).float()) + clamp(normal_dist.sample(), -epsilon_limit, epsilon_limit), min_action, max_action)
-    action = action.detach().numpy().squeeze()
+    action = clamp(actor_net(curr_state.view(1, -1,).float()) + clamp(normal_dist.sample().to(device), -epsilon_limit, epsilon_limit), min_action, max_action)
+    action = action.detach().to(cpu_device).numpy().squeeze()
     next_state, reward, done, _ = env.step(action)
 
     # Store transition tuple (s, a, r, s') in B
-    replay_buffer.append((curr_state.view(1, -1,), tensor(action).view(1, -1,), tensor(reward).float().view(1, 1,), tensor(next_state).view(1, -1,), tensor(done).view(1, 1,)))
+    replay_buffer.append((curr_state.view(1, -1,), tensor(action).to(device).view(1, -1,), tensor(reward).float().to(device).view(1, 1,), tensor(next_state).to(device).view(1, -1,), tensor(done).to(device).view(1, 1,)))
     if len(replay_buffer) > replay_memory_max_size + 10:
         replay_buffer = replay_buffer[10:]
 
@@ -122,7 +125,7 @@ for t in range(num_iterations):
     minibatch_states = minibatch_states.float()
 
     # a˜ ← πφ0 (s') + ϵ, ϵ ∼ clip(N (0, σ˜), −c, c)
-    sampled = normal_dist.sample(sample_shape=(minibatch_size, 1,))
+    sampled = normal_dist.sample(sample_shape=(minibatch_size, 1,)).to(device)
     minibatch_next_actions = clamp(actor_target_net(minibatch_next_states) + clamp(sampled, -epsilon_limit, epsilon_limit), min_action, max_action)
 
     # y ← r + γ mini=1,2 Qθ'i(s', a˜)
@@ -133,14 +136,13 @@ for t in range(num_iterations):
     critic_net_1_loss = critic_net_1_loss_fn(critic_net_1(minibatch_states, minibatch_actions), minibatch_y)
     critic_net_1_loss.backward(retain_graph=True)
     critic_net_1_optimizer.step()
-    writer.add_scalar('Loss/critic_net_1', critic_net_1_loss.detach().numpy().squeeze(), t)
+    writer.add_scalar('Loss/critic_net_1', critic_net_1_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
     critic_net_2.zero_grad()
     critic_net_2_loss = critic_net_2_loss_fn(critic_net_2(minibatch_states, minibatch_actions), minibatch_y)
-    # print(critic_net_2_loss.grad_fn)
-    critic_net_2_loss.backward(retain_graph=True)  # TODO correct?
+    critic_net_2_loss.backward(retain_graph=True)
     critic_net_2_optimizer.step()
-    writer.add_scalar('Loss/critic_net_2', critic_net_2_loss.detach().numpy().squeeze(), t)
+    writer.add_scalar('Loss/critic_net_2', critic_net_2_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
     # if t mod d then
     if t % steps_until_policy_update == 0:
@@ -149,7 +151,7 @@ for t in range(num_iterations):
         actor_net_loss = -1 * critic_net_1(minibatch_states, actor_net(minibatch_states)).mean()  # gradient ascent
         actor_net_loss.backward()
         actor_net_optimizer.step()
-        writer.add_scalar('Loss/actor_net', actor_net_loss.detach().numpy().squeeze(), t)
+        writer.add_scalar('Loss/actor_net', actor_net_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
         # Update target networks:
         # θ'i ← τθi + (1 − τ )θ'i
@@ -164,20 +166,20 @@ for t in range(num_iterations):
             actor_target_net_parameter.data = target_update_ratio*actor_net_parameter + (1-target_update_ratio)*actor_target_net_parameter
 
     # end if
-    if t % (num_iterations // 10) == 0 or t == num_iterations - 1:
+    if t % (num_iterations // 1000) == 0 or t == num_iterations - 1:
         print("iter", t)
-        torch.save(critic_net_1.state_dict(), 'models/' + model_name + '-critic_net_1.pkl')
-        torch.save(critic_target_net_1.state_dict(), 'models/' + model_name + '-critic_target_net_1.pkl')
-        torch.save(critic_net_2.state_dict(), 'models/' + model_name + '-critic_net_2.pkl')
-        torch.save(critic_target_net_2.state_dict(), 'models/' + model_name + '-critic_target_net_2.pkl')
-        torch.save(actor_net.state_dict(), 'models/' + model_name + '-actor_net.pkl')
-        torch.save(actor_target_net.state_dict(), 'models/' + model_name + '-actor_target_net.pkl')
+        torch.save(critic_net_1.state_dict(), 'models/current/' + model_name + '-critic_net_1.pkl')
+        torch.save(critic_target_net_1.state_dict(), 'models/current/' + model_name + '-critic_target_net_1.pkl')
+        torch.save(critic_net_2.state_dict(), 'models/current/' + model_name + '-critic_net_2.pkl')
+        torch.save(critic_target_net_2.state_dict(), 'models/current/' + model_name + '-critic_target_net_2.pkl')
+        torch.save(actor_net.state_dict(), 'models/current/' + model_name + '-actor_net.pkl')
+        torch.save(actor_target_net.state_dict(), 'models/current/' + model_name + '-actor_target_net.pkl')
 
     if not done:
-        curr_state = tensor(next_state).float()
+        curr_state = tensor(next_state).float().to(device)
     else:
         curr_state = env.reset()
-        curr_state = tensor(curr_state).float()
+        curr_state = tensor(curr_state).float().to(device)
 
     if t % (num_iterations // 25) == 0 or t == num_iterations - 1:
         render = False
@@ -187,7 +189,7 @@ for t in range(num_iterations):
         episode_rewards = []
         episode_reward = 0
         while len(episode_rewards) < num_eval_episodes:
-            test_action = actor_net(tensor(test_obs).float()).detach().numpy().squeeze()
+            test_action = actor_net(tensor(test_obs).float().to(device)).detach().to(cpu_device).numpy().squeeze()
             test_obs, test_reward, test_done, _ = test_env.step(test_action)
             episode_reward += test_reward
             if test_done:
@@ -208,7 +210,7 @@ obs = env.reset()
 episode_rewards = []
 episode_reward = 0
 while len(episode_rewards) < num_eval_episodes:
-    action = actor_net(tensor(obs).float()).detach().numpy().squeeze()
+    action = actor_net(tensor(obs).float().to(device)).detach().to(cpu_device).numpy().squeeze()
     obs, reward, done, _ = env.step(action)
     episode_reward += reward
     if done:
