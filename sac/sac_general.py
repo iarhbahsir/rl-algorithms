@@ -1,4 +1,7 @@
+import operator
 import random
+from functools import reduce
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -14,6 +17,8 @@ import torch
 
 import mujoco_py
 import gym
+
+import gc
 
 environment_name = 'Hopper-v2'
 
@@ -178,22 +183,29 @@ for t in range(num_iterations):
     # for each environment step do
     # (in practice, at most one env step per gradient step)
     # at ∼ πφ(at|st)
-    if t % 1000 == 0:
+    if t % 1 == 0:
+        print()
         print("{} MB start of loop".format(torch.cuda.memory_allocated(device=device)*(1e-6)))
     action, log_prob = actor_net(curr_state.view(1, -1,).float().to(device))
-    action = action.detach().to(cpu_device).numpy().squeeze()
+    action_np = action.detach().to(cpu_device).numpy().squeeze()
+    log_prob = log_prob.detach()
 
     # st+1 ∼ p(st+1|st, at)
-    next_state, reward, done, _ = env.step(action)
+    next_state, reward, done, _ = env.step(action_np)
+
+    print("{} MB 1".format(torch.cuda.memory_allocated(device=device) * (1e-6)))
 
     # D ← D ∪ {(st, at, r(st, at), st+1)}
-    replay_buffer.append((curr_state.to(cpu_device).view(1, -1, ).float(), tensor(action).to(cpu_device).float().view(1, -1, ), log_prob.float().to(cpu_device).view(1, -1, ),
+    replay_buffer.append((curr_state.to(cpu_device).view(1, -1, ).float(), tensor(action_np).to(cpu_device).float().view(1, -1, ), log_prob.float().to(cpu_device).view(1, -1, ),
                           tensor(reward).float().to(cpu_device).view(1, 1, ), tensor(next_state).float().to(cpu_device).view(1, -1, ),
                           tensor(done).to(cpu_device).view(1, 1, ).float()))
     if len(replay_buffer) > replay_buffer_max_size + 10:
         replay_buffer = replay_buffer[10:]
 
-    if t % 1000 == 0:
+    print("{} MB 1".format(torch.cuda.memory_allocated(device=device) * (1e-6)))
+
+    del action, log_prob
+    if t % 1 == 0:
         print("{} MB after adding to replay buffer".format(torch.cuda.memory_allocated(device=device)*(1e-6)))
 
     # for each gradient step do
@@ -203,7 +215,7 @@ for t in range(num_iterations):
         minibatch_states, minibatch_actions, minibatch_action_log_probs, minibatch_rewards, minibatch_next_states, minibatch_dones = [cat(mb, dim=0).to(device) for mb in zip(*transitions_minibatch)]
         minibatch_states = minibatch_states.float()
 
-        if t % 1000 == 0:
+        if t % 1 == 0:
             print("{} MB after minibatch sampled".format(torch.cuda.memory_allocated(device=device) * (1e-6)))
 
         # ψ ← ψ − λV ∇ˆψJV (ψ)
@@ -213,7 +225,8 @@ for t in range(num_iterations):
         state_value_net_optimizer.step()
         writer.add_scalar('Loss/state_value_net', state_value_net_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
-        if t % 1000 == 0:
+        del state_value_net_loss
+        if t % 1 == 0:
             print("{} MB after state value net fit".format(torch.cuda.memory_allocated(device=device) * (1e-6)))
 
         # θi ← θi − λQ∇ˆθiJQ(θi) for i ∈ {1, 2}
@@ -223,7 +236,8 @@ for t in range(num_iterations):
         critic_net_1_optimizer.step()
         writer.add_scalar('Loss/critic_net_1', critic_net_1_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
-        if t % 1000 == 0:
+        del critic_net_1_loss
+        if t % 1 == 0:
             print("{} MB after critic net 1 fit".format(torch.cuda.memory_allocated(device=device) * (1e-6)))
 
         critic_net_2.zero_grad()
@@ -232,7 +246,8 @@ for t in range(num_iterations):
         critic_net_2_optimizer.step()
         writer.add_scalar('Loss/critic_net_2', critic_net_2_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
-        if t % 1000 == 0:
+        del critic_net_2_loss
+        if t % 1 == 0:
             print("{} MB after critic net 2 fit".format(torch.cuda.memory_allocated(device=device) * (1e-6)))
 
         # φ ← φ − λπ∇ˆφJπ(φ)
@@ -243,13 +258,21 @@ for t in range(num_iterations):
         actor_net_optimizer.step()
         writer.add_scalar('Loss/actor_net', actor_net_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
-        if t % 1000 == 0:
+        del actor_net_loss, minibatch_actions_new, minibatch_action_log_probs_new
+        if t % 1 == 0:
             print("{} MB after actor net fit".format(torch.cuda.memory_allocated(device=device) * (1e-6)))
 
         # ψ¯ ← τψ + (1 − τ )ψ¯
         for state_value_target_net_parameter, state_value_net_parameter in zip(state_value_target_net.parameters(), state_value_net.parameters()):
             state_value_target_net_parameter.data = target_smoothing_coefficient*state_value_net_parameter + (1 - target_smoothing_coefficient)*state_value_target_net_parameter
         # end for
+
+        # TODO
+        del minibatch_states, minibatch_actions, minibatch_action_log_probs, minibatch_rewards, minibatch_next_states, minibatch_dones
+        if t % 1 == 0:
+            print("{} MB after deleting remainder".format(torch.cuda.memory_allocated(device=device) * (1e-6)))
+
+
 
     if t % 1000 == 0 or t == num_iterations - 1:
         print("iter", t)
@@ -288,6 +311,7 @@ for t in range(num_iterations):
         writer.add_scalar('Reward/test', avg_episode_rewards, t)
         if avg_episode_rewards > greatest_avg_episode_rewards:
             torch.save(actor_net.state_dict(), 'models/current/best/best-' + model_name + '-actor_net.pkl')
+
 # end for
 
 render = True
