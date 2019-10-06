@@ -68,6 +68,14 @@ parameters = {
     'action_dim': {
         'LunarLanderContinuous-v2': 2,
         'Hopper-v2': 3
+    },
+    'num_iter_before_train': {
+        'LunarLanderContinuous-v2': 100,
+        'Hopper-v2': 4000
+    },
+    'hidden_layer_size': {
+        'LunarLanderContinuous-v2': 100,
+        'Hopper-v2': 256
     }
 }
 
@@ -83,8 +91,10 @@ temperature = 1/parameters['reward_scale'][environment_name]
 minibatch_size = parameters['minibatch_size'][environment_name]
 STATE_DIM = parameters['state_dim'][environment_name]
 ACTION_DIM = parameters['action_dim'][environment_name]
+num_iter_before_train = parameters['num_iter_before_train'][environment_name]
+hidden_layer_size = parameters['hidden_layer_size'][environment_name]
 
-writer = SummaryWriter(log_dir="./runs/v2-1mil-iter-256-node-hidden-layers-buffer-1mil")
+writer = SummaryWriter(log_dir="./runs/v11-1mil-iter-{}-node-hidden-layers-buffer-1mil".format(hidden_layer_size))
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 cpu_device = torch.device("cpu")
@@ -94,18 +104,19 @@ cpu_device = torch.device("cpu")
 class SACActorNN(nn.Module):
     def __init__(self):
         super(SACActorNN, self).__init__()
-        self.fc1 = nn.Linear(STATE_DIM, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.mean = nn.Linear(256, ACTION_DIM)
-        self.log_stdev = nn.Linear(256, ACTION_DIM)
+        self.fc1 = nn.Linear(STATE_DIM, hidden_layer_size)
+        self.fc2 = nn.Linear(hidden_layer_size, hidden_layer_size)
+        self.mean = nn.Linear(hidden_layer_size, ACTION_DIM)
+        self.log_stdev = nn.Linear(hidden_layer_size, ACTION_DIM)
         self.normal_dist = normal.Normal(0, 1)
+
 
     def forward(self, x_state):
         # print(x_state.shape)
         x_state = F.relu(self.fc1(x_state))
         x_state = F.relu(self.fc2(x_state))
         mean = self.mean(x_state)
-        log_stdev = self.log_stdev(x_state)
+        log_stdev = clamp(self.log_stdev(x_state), min=-2, max=20)
         unsquashed_action = mean + self.normal_dist.sample(sample_shape=log_stdev.shape).to(device) * torch.exp(log_stdev).to(device)
         squashed_action = torch.tanh(unsquashed_action)
         action_dist = normal.Normal(mean, torch.exp(log_stdev))
@@ -117,9 +128,9 @@ class SACActorNN(nn.Module):
 class SACCriticNN(nn.Module):
     def __init__(self):
         super(SACCriticNN, self).__init__()
-        self.fc1 = nn.Linear(STATE_DIM + ACTION_DIM, 100)
-        self.fc2 = nn.Linear(100, 100)
-        self.fc3 = nn.Linear(100, ACTION_DIM)
+        self.fc1 = nn.Linear(STATE_DIM + ACTION_DIM, hidden_layer_size)
+        self.fc2 = nn.Linear(hidden_layer_size, hidden_layer_size)
+        self.fc3 = nn.Linear(hidden_layer_size, ACTION_DIM)
 
     def forward(self, x_state, x_action):
         x = cat((x_state, x_action), dim=1)  # concatenate inputs along 0th dimension
@@ -133,9 +144,9 @@ class SACCriticNN(nn.Module):
 class SACStateValueNN(nn.Module):
     def __init__(self):
         super(SACStateValueNN, self).__init__()
-        self.fc1 = nn.Linear(STATE_DIM, 100)
-        self.fc2 = nn.Linear(100, 100)
-        self.fc3 = nn.Linear(100, 1)
+        self.fc1 = nn.Linear(STATE_DIM, hidden_layer_size)
+        self.fc2 = nn.Linear(hidden_layer_size, hidden_layer_size)
+        self.fc3 = nn.Linear(hidden_layer_size, 1)
 
     def forward(self, x_state):
         x = F.relu(self.fc1(x_state))
@@ -177,10 +188,11 @@ for t in range(num_iterations):
     # for each environment step do
     # (in practice, at most one env step per gradient step)
     # at ∼ πφ(at|st)
-    if t % 1 == 0:
-        print()
-        print("{} MB start of loop".format(torch.cuda.memory_allocated(device=device)*(1e-6)))
-    action, log_prob = actor_net(curr_state.view(1, -1,).float().to(device))
+    if t > num_iter_before_train:
+        action, log_prob = actor_net(curr_state.view(1, -1,).float().to(device))
+    else:
+        action = tensor(env.action_space.sample()).float().to(device)
+        log_prob = torch.ones(action.shape)
     action_np = action.detach().to(cpu_device).numpy().squeeze()
     log_prob = log_prob.detach()
 
@@ -196,55 +208,61 @@ for t in range(num_iterations):
 
     del action, log_prob
 
+    if t > num_iter_before_train:
     # for each gradient step do
-    for gradient_step in range(num_gradient_steps):
-        # Sample mini-batch of N transitions (s, a, r, s') from D
-        transitions_minibatch = random.choices(replay_buffer, k=minibatch_size)
-        minibatch_states, minibatch_actions, minibatch_action_log_probs, minibatch_rewards, minibatch_next_states, minibatch_dones = [cat(mb, dim=0).to(device) for mb in zip(*transitions_minibatch)]
-        minibatch_states = minibatch_states.float()
+        for gradient_step in range(num_gradient_steps):
+            # Sample mini-batch of N transitions (s, a, r, s') from D
+            transitions_minibatch = random.choices(replay_buffer, k=minibatch_size)
+            minibatch_states, minibatch_actions, minibatch_action_log_probs, minibatch_rewards, minibatch_next_states, minibatch_dones = [cat(mb, dim=0).to(device) for mb in zip(*transitions_minibatch)]
+            minibatch_states = minibatch_states.float()
 
-        # ψ ← ψ − λV ∇ˆψJV (ψ)
-        state_value_net.zero_grad()
-        state_value_net_loss = torch.mean(0.5 * (state_value_net(minibatch_states) - (torch.min(critic_net_1(minibatch_states, minibatch_actions), critic_net_2(minibatch_states, minibatch_actions)) - torch.mul(temperature, actor_net(minibatch_states)[1]))) ** 2)
-        state_value_net_loss.backward()
-        state_value_net_optimizer.step()
-        writer.add_scalar('Loss/state_value_net', state_value_net_loss.detach().to(cpu_device).numpy().squeeze(), t)
+            # ψ ← ψ − λV ∇ˆψJV (ψ)
+            state_value_net.zero_grad()
+            minibatch_actions_new, minibatch_action_log_probs_new = actor_net(minibatch_states)
+            state_value_net_loss = torch.mean(0.5 * (state_value_net(minibatch_states) - (torch.min(critic_net_1(minibatch_states, minibatch_actions_new), critic_net_2(minibatch_states, minibatch_actions_new)) - torch.mul(temperature, minibatch_action_log_probs_new))) ** 2)
+            state_value_net_optimizer.zero_grad()
+            state_value_net_loss.backward()
+            state_value_net_optimizer.step()
+            writer.add_scalar('Loss/state_value_net', state_value_net_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
-        del state_value_net_loss
+            del state_value_net_loss, minibatch_actions_new, minibatch_action_log_probs_new
 
-        # θi ← θi − λQ∇ˆθiJQ(θi) for i ∈ {1, 2}
-        critic_net_1.zero_grad()
-        critic_net_1_loss = torch.mean(0.5 * (critic_net_1(minibatch_states, minibatch_actions) - (minibatch_rewards + discount_rate*state_value_target_net(minibatch_next_states)*(-minibatch_dones + 1))) ** 2)
-        critic_net_1_loss.backward()
-        critic_net_1_optimizer.step()
-        writer.add_scalar('Loss/critic_net_1', critic_net_1_loss.detach().to(cpu_device).numpy().squeeze(), t)
+            # θi ← θi − λQ∇ˆθiJQ(θi) for i ∈ {1, 2}
+            critic_net_1.zero_grad()
+            critic_net_1_loss = torch.mean(0.5 * (critic_net_1(minibatch_states, minibatch_actions) - (minibatch_rewards + discount_rate*state_value_target_net(minibatch_next_states)*(-minibatch_dones + 1))) ** 2)
+            critic_net_1_optimizer.zero_grad()
+            critic_net_1_loss.backward()
+            critic_net_1_optimizer.step()
+            writer.add_scalar('Loss/critic_net_1', critic_net_1_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
-        del critic_net_1_loss
+            del critic_net_1_loss
 
-        critic_net_2.zero_grad()
-        critic_net_2_loss = torch.mean(0.5 * (critic_net_2(minibatch_states, minibatch_actions) - (minibatch_rewards + discount_rate*state_value_target_net(minibatch_next_states)*(-minibatch_dones + 1))) ** 2)
-        critic_net_2_loss.backward()
-        critic_net_2_optimizer.step()
-        writer.add_scalar('Loss/critic_net_2', critic_net_2_loss.detach().to(cpu_device).numpy().squeeze(), t)
+            critic_net_2.zero_grad()
+            critic_net_2_loss = torch.mean(0.5 * (critic_net_2(minibatch_states, minibatch_actions) - (minibatch_rewards + discount_rate*state_value_target_net(minibatch_next_states)*(-minibatch_dones + 1))) ** 2)
+            critic_net_2_optimizer.zero_grad()
+            critic_net_2_loss.backward()
+            critic_net_2_optimizer.step()
+            writer.add_scalar('Loss/critic_net_2', critic_net_2_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
-        del critic_net_2_loss
+            del critic_net_2_loss
 
-        # φ ← φ − λπ∇ˆφJπ(φ)
-        actor_net.zero_grad()
-        minibatch_actions_new, minibatch_action_log_probs_new = actor_net(minibatch_states)
-        actor_net_loss = torch.mean(torch.mul(minibatch_action_log_probs_new, temperature) - torch.min(critic_net_1(minibatch_states, minibatch_actions_new), critic_net_2(minibatch_states, minibatch_actions_new)))
-        actor_net_loss.backward()
-        actor_net_optimizer.step()
-        writer.add_scalar('Loss/actor_net', actor_net_loss.detach().to(cpu_device).numpy().squeeze(), t)
+            # φ ← φ − λπ∇ˆφJπ(φ)
+            actor_net.zero_grad()
+            minibatch_actions_new, minibatch_action_log_probs_new = actor_net(minibatch_states)
+            actor_net_loss = torch.mean(torch.mul(minibatch_action_log_probs_new, temperature) - torch.min(critic_net_1(minibatch_states, minibatch_actions_new), critic_net_2(minibatch_states, minibatch_actions_new)))
+            actor_net_optimizer.zero_grad()
+            actor_net_loss.backward()
+            actor_net_optimizer.step()
+            writer.add_scalar('Loss/actor_net', actor_net_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
-        del actor_net_loss, minibatch_actions_new, minibatch_action_log_probs_new
+            del actor_net_loss, minibatch_actions_new, minibatch_action_log_probs_new
 
-        # ψ¯ ← τψ + (1 − τ )ψ¯
-        for state_value_target_net_parameter, state_value_net_parameter in zip(state_value_target_net.parameters(), state_value_net.parameters()):
-            state_value_target_net_parameter.data = target_smoothing_coefficient*state_value_net_parameter + (1 - target_smoothing_coefficient)*state_value_target_net_parameter
-        # end for
+            # ψ¯ ← τψ + (1 − τ )ψ¯
+            for state_value_target_net_parameter, state_value_net_parameter in zip(state_value_target_net.parameters(), state_value_net.parameters()):
+                state_value_target_net_parameter.data = target_smoothing_coefficient*state_value_net_parameter + (1 - target_smoothing_coefficient)*state_value_target_net_parameter
+            # end for
 
-        del minibatch_states, minibatch_actions, minibatch_action_log_probs, minibatch_rewards, minibatch_next_states, minibatch_dones
+            del minibatch_states, minibatch_actions, minibatch_action_log_probs, minibatch_rewards, minibatch_next_states, minibatch_dones
 
     if t % 1000 == 0 or t == num_iterations - 1:
         print("iter", t)
@@ -260,7 +278,7 @@ for t in range(num_iterations):
         curr_state = env.reset()
         curr_state = tensor(curr_state).float().to(device)
 
-    if t % (num_iterations // 50) == 0 or t == num_iterations - 1:
+    if t % (num_iterations // 1000) == 0 or t == num_iterations - 1:
         render = False
         num_eval_episodes = 10
 
@@ -293,7 +311,9 @@ obs = env.reset()
 episode_rewards = []
 episode_reward = 0
 while len(episode_rewards) < num_eval_episodes:
-    action = actor_net(tensor(obs).float().to(device)).detach().to(cpu_device).numpy().squeeze()
+    action, log_prob = actor_net(tensor(obs).view(1, -1, ).float().to(device))
+    action = action.detach().to(cpu_device).numpy().squeeze()
+    log_prob = log_prob.detach()
     obs, reward, done, _ = env.step(action)
     episode_reward += reward
     if done:

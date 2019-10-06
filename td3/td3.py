@@ -27,7 +27,7 @@ epsilon_limit = 0.5
 min_action = -2
 max_action = 2
 
-# writer = SummaryWriter()
+writer = SummaryWriter()
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 cpu_device = torch.device("cpu")
@@ -137,13 +137,13 @@ for t in range(num_iterations):
     critic_net_1_loss = critic_net_1_loss_fn(critic_net_1(minibatch_states, minibatch_actions), minibatch_y)
     critic_net_1_loss.backward(retain_graph=True)
     critic_net_1_optimizer.step()
-    # writer.add_scalar('Loss/critic_net_1', critic_net_1_loss.detach().to(cpu_device).numpy().squeeze(), t)
+    writer.add_scalar('Loss/critic_net_1', critic_net_1_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
     critic_net_2.zero_grad()
     critic_net_2_loss = critic_net_2_loss_fn(critic_net_2(minibatch_states, minibatch_actions), minibatch_y)
     critic_net_2_loss.backward(retain_graph=True)
     critic_net_2_optimizer.step()
-    # writer.add_scalar('Loss/critic_net_2', critic_net_2_loss.detach().to(cpu_device).numpy().squeeze(), t)
+    writer.add_scalar('Loss/critic_net_2', critic_net_2_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
     # if t mod d then
     if t % steps_until_policy_update == 0:
@@ -152,7 +152,7 @@ for t in range(num_iterations):
         actor_net_loss = -1 * critic_net_1(minibatch_states, actor_net(minibatch_states)).mean()  # gradient ascent
         actor_net_loss.backward()
         actor_net_optimizer.step()
-        # writer.add_scalar('Loss/actor_net', actor_net_loss.detach().to(cpu_device).numpy().squeeze(), t)
+        writer.add_scalar('Loss/actor_net', actor_net_loss.detach().to(cpu_device).numpy().squeeze(), t)
 
         # Update target networks:
         # θ'i ← τθi + (1 − τ )θ'i
@@ -169,12 +169,12 @@ for t in range(num_iterations):
     # end if
     if t % (num_iterations // 1000) == 0 or t == num_iterations - 1:
         print("iter", t)
-        # torch.save(critic_net_1.state_dict(), 'models/current/' + model_name + '-critic_net_1.pkl')
-        # torch.save(critic_target_net_1.state_dict(), 'models/current/' + model_name + '-critic_target_net_1.pkl')
-        # torch.save(critic_net_2.state_dict(), 'models/current/' + model_name + '-critic_net_2.pkl')
-        # torch.save(critic_target_net_2.state_dict(), 'models/current/' + model_name + '-critic_target_net_2.pkl')
-        # torch.save(actor_net.state_dict(), 'models/current/' + model_name + '-actor_net.pkl')
-        # torch.save(actor_target_net.state_dict(), 'models/current/' + model_name + '-actor_target_net.pkl')
+        torch.save(critic_net_1.state_dict(), 'models/current/' + model_name + '-critic_net_1.pkl')
+        torch.save(critic_target_net_1.state_dict(), 'models/current/' + model_name + '-critic_target_net_1.pkl')
+        torch.save(critic_net_2.state_dict(), 'models/current/' + model_name + '-critic_net_2.pkl')
+        torch.save(critic_target_net_2.state_dict(), 'models/current/' + model_name + '-critic_target_net_2.pkl')
+        torch.save(actor_net.state_dict(), 'models/current/' + model_name + '-actor_net.pkl')
+        torch.save(actor_target_net.state_dict(), 'models/current/' + model_name + '-actor_target_net.pkl')
 
     if not done:
         curr_state = tensor(next_state).float().to(device)
@@ -201,7 +201,7 @@ for t in range(num_iterations):
                 test_env.render()
 
         avg_episode_rewards = np.mean(np.asarray(episode_rewards))
-        # writer.add_scalar('Reward/test', avg_episode_rewards, t)
+        writer.add_scalar('Reward/test', avg_episode_rewards, t)
 # end for
 
 render = True
