@@ -1,8 +1,9 @@
 # rl-algorithms
 An implementation-focused survey of popular reinforcement learning algorithms
 
-### Goal:
+NOTE: For the time being, the final versions of the algorithms here can be found [here](https://github.com/iarhbahsir/partial-observability).
 
+### Goal:
 The goal of this project is to implement some algorithms that I have come across repeatedly so that I can understand their workings, nuances, and tuning processes. 
 
 ### Implementation:
